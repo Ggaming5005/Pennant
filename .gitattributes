@@ -1,0 +1,7 @@
+* text=auto
+*.luau text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.rbxm binary
+*.png binary
+*.gif binary

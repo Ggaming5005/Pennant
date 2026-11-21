@@ -1,0 +1,33 @@
+name: Checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Lune 0.11.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/lune-0.11.1-linux-x86_64.zip"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$archive" \
+            https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-linux-x86_64.zip
+          echo "39859282ce677fce19e6eb45c37596a90a25c324c95b4e7e02d428b6cae294a1  $archive" | sha256sum --check
+          unzip -p "$archive" lune > "$RUNNER_TEMP/lune"
+          chmod +x "$RUNNER_TEMP/lune"
+
+      - name: Verify the package and settings
+        run: '"$RUNNER_TEMP/lune" run tests/package.luau'
+
+      - name: Verify rankings
+        run: '"$RUNNER_TEMP/lune" run tests/rankings.luau'
