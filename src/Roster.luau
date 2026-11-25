@@ -218,12 +218,40 @@ local function applyAppearance(screen, appearance)
 	end
 end
 
+-- Original template artwork. Values are image URIs, also accepted by badge and action settings.
+local templateIconAssets = table.freeze({
+	Classic = "rbxassetid://87826894403473", -- classic-pennant.png
+	Simulator = "rbxassetid://128914419072525", -- simulator-hatch.png
+	Competitive = "rbxassetid://139509767660461", -- competitive-chevron.png
+	Roleplay = "rbxassetid://79894440258449", -- roleplay-service.png
+})
+local competitiveCover = "rbxassetid://131659092836215"
+
+local function makeBadgeAtlas(image)
+	if type(image) == "number" then
+		assert(image > 0 and image < math.huge and image % 1 == 0, "Expected a positive image asset ID")
+		image = "rbxassetid://" .. tostring(image)
+	end
+	assert(type(image) == "string" and image ~= "", "Expected an image asset ID or URI")
+	local cellSize = Vector2.new(256, 256)
+	local badges = {}
+	for index, name in ipairs({"MVP", "VIP", "Creator", "Moderator", "Champion", "Founder"}) do
+		local cell = index - 1
+		badges[name] = table.freeze({
+			Image = image, ImageRectSize = cellSize,
+			ImageRectOffset = Vector2.new((cell % 3) * 256, math.floor(cell / 3) * 256),
+			Position = "Right", Tooltip = name,
+		})
+	end
+	return table.freeze(badges)
+end
+
 -- Presets describe game data and card structure. Callers retain ownership of their tables.
 local function withRosterPreset(input)
 	local preset = input.Preset
 	if preset == nil then return input end
-	assert(preset == "Classic" or preset == "Simulator" or preset == "Competitive" or preset == "Roleplay",
-		"Roster.Preset must be Classic, Simulator, Competitive or Roleplay")
+	assert(preset == "Classic" or preset == "Simulator" or preset == "Competitive" or preset == "Roleplay" or preset == "Profile",
+		"Unknown Roster.Preset")
 	local options = table.clone(input)
 	local features = table.clone(input.Features or {})
 	options.Features = features
@@ -237,13 +265,16 @@ local function withRosterPreset(input)
 		if not table.find(watch, key) then table.insert(watch, key) end
 	end
 	options.StyleAttributes = watch
-	if options.ShowCardStats == nil then options.ShowCardStats = true end
+	if options.ShowCardStats == nil then options.ShowCardStats = preset ~= "Profile" end
 	local columns
 	if preset == "Simulator" then
 		columns = {{Id="Rebirths"}, {Id="Eggs"}}
 		for _, key in {"Title", "BestHatchImage", "BestHatchOdds"} do observe(key) end
 	elseif preset == "Competitive" then
 		columns = {{Id="Kills"}, {Id="Deaths"}, {Id="Assists"}}
+	elseif preset == "Profile" then
+		columns = {}
+		observe("PennantFilteredBio")
 	else
 		columns = {{Id="Job", Attribute="Job", Width=98}, {Id="Department", Attribute="Department", Width=112}}
 		if not options.ActionGrid then options.ActionGrid={FillLastRow=true} end
@@ -259,12 +290,15 @@ local function withRosterPreset(input)
 			base = {BackgroundColor=color(28,26,33), BannerColor=color(98,31,40),
 				AvatarRingColor=color(210,200,194), FeaturedImage=player:GetAttribute("BestHatchImage"),
 				FeaturedText=if odds then "1/" .. tostring(odds) else nil}
+		elseif preset == "Profile" then
+			base = {HeaderLayout="Profile", BannerImage=competitiveCover, BackgroundColor=color(23,29,38),
+				BannerColor=color(30,38,50), AvatarBackgroundColor=color(24,32,44), AvatarRingColor=color(93,111,137)}
 		elseif preset == "Competitive" then
 			local team = player.Team
 			title = if team then team.Name else nil
-			local accent = if team then team.TeamColor.Color else color(102,205,248)
-			base = {BackgroundColor=color(19,25,36), BannerColor=color(29,40,54),
-				AccentColor=accent, TitleColor=accent, AvatarBackgroundColor=color(23,32,46)}
+			local accent = if team then team.TeamColor.Color else color(149,178,202)
+			base = {BackgroundColor=color(43,43,55), BannerColor=color(37,42,55), HeaderLayout="Match", Emblem=false,
+				AccentColor=accent, AvatarBackgroundColor=color(49,67,91), AvatarRingColor=accent:Lerp(color(158,180,209),0.75)}
 		else
 			title = player:GetAttribute("Callsign")
 			base = {BackgroundColor=color(28,36,36), BannerColor=color(40,53,51),
@@ -286,13 +320,15 @@ end
 
 -- Reflow the native card's identity and data cells. Undo touched properties before
 -- borrowing the same card for another selection (including an offline ranking).
-local function createGenreLayout(header, stats, role)
+local function createGenreLayout(header, stats, role, presentation)
 	local banner, avatar = header.Background, header.AvatarImage
 	local identity = banner.TextContainerFrame
 	local saved = {}
-	local stripe = Instance.new("Frame")
-	stripe.Name, stripe.BorderSizePixel, stripe.Visible = "TeamStripe", 0, false
-	stripe.Parent = banner
+	local cover = Instance.new("ImageLabel")
+	cover.Name, cover.BackgroundTransparency, cover.Visible = "ProfileCover", 1, false
+	cover.ScaleType, cover.Parent = Enum.ScaleType.Crop, banner
+	local coverCorner = Instance.new("UICorner")
+	coverCorner.CornerRadius, coverCorner.Parent = UDim.new(0,4), cover
 	local function set(node, property, value)
 		if node[property] == value then return end
 		local properties = saved[node]
@@ -305,26 +341,36 @@ local function createGenreLayout(header, stats, role)
 			for key, value in pairs(properties) do node[key] = value end
 		end
 		table.clear(saved)
-		stripe.Visible = false
+		cover.Visible = false
 	end
 	local function apply(preset, spec, width, tiles, count, large)
 		local arena = preset == "Competitive"
+		if arena and spec.HeaderLayout == "Match" and presentation then
+			presentation.match(header, stats, role, cover, spec, width, tiles, count, large, set)
+			return
+		end
 		local left = Enum.TextXAlignment.Left
 		local accent = spec.AccentColor or spec.TitleColor or Color3.fromRGB(216,230,238)
-		local height = if arena then (if large then 78 else 65) else (if large then 93 else 79)
+		local profile = (preset == "Profile" or (arena and spec.HeaderLayout == "Profile")) and banner.Image ~= "" and spec.HeaderLayout ~= "Compact"
+		local height = if profile then (if large then 116 else 100) elseif arena then (if large then 78 else 65) else (if large then 93 else 79)
 		local portrait = math.min(avatar.Size.X.Offset, height-14)
-		local portraitX = if arena then width-portrait-15 else 14
+		local portraitX = if arena and not profile then width-portrait-15 else 14
 		set(header, "Size", UDim2.new(1,0,0,height+11))
 		set(banner, "Size", UDim2.new(1,-12,0,height))
-		set(avatar,"Position",UDim2.fromOffset(portraitX,5+height/2))
+		set(avatar,"Position",UDim2.fromOffset(portraitX,if profile then 43 else 5+height/2))
 		set(avatar,"Size",UDim2.fromOffset(portrait,portrait))
-		local start = if arena or not avatar.Visible then 13 else portrait+17
-		local finish = if arena and avatar.Visible then portrait+16 else 8
-		set(identity,"Position",UDim2.fromOffset(start,0))
-		set(identity,"Size",UDim2.new(1,-start-finish,1,0))
-		if arena then
-			stripe.BackgroundColor3, stripe.Visible = accent,true
-			stripe.Position,stripe.Size = UDim2.fromOffset(1,8),UDim2.new(0,3,1,-16)
+		local start = if (arena and not profile) or not avatar.Visible then 13 else portrait+17
+		local finish = if arena and not profile and avatar.Visible then portrait+16 else 8
+		local inset = if profile then 35 else 0
+		set(identity,"Position",UDim2.fromOffset(start,inset))
+		set(identity,"Size",UDim2.new(1,-start-finish,1,-inset))
+		if profile then
+			cover.Position = UDim2.fromScale(0,0)
+			cover.Image, cover.ImageColor3, cover.ImageTransparency = banner.Image, banner.ImageColor3, banner.ImageTransparency
+			cover.Size, cover.Visible = UDim2.new(1,0,0,32), cover.Image ~= ""
+			set(banner,"ImageTransparency",1)
+			set(role,"LayoutOrder",3)
+		elseif arena then
 			set(role,"LayoutOrder",0)
 		end
 		for _, key in {"FeaturedImage","FeaturedText"} do
@@ -368,7 +414,9 @@ local function createGenreLayout(header, stats, role)
 end
 
 local baseActions = {"Trade", "Friend", "Avatar", "Block"}
+local actionArt = table.freeze({Loadout="rbxassetid://82813232808526", Inspect="rbxassetid://120396119214414", Highlights="rbxassetid://77199131926973"})
 local presetActions = {
+	Profile = {"Avatar", "Friend", "Block"},
 	Simulator = {{Id="Trade", Color=Color3.fromRGB(54,91,218)}, "Friend", "Avatar", "Block"},
 	Competitive = {"Spectate", "Friend", "Avatar", "Block"},
 	Roleplay = {"ShowID", "Friend", "Avatar", "Block"},
@@ -378,7 +426,7 @@ local function actionNumber(value, fallback, low, high)
 	return if type(value)=="number" and value==value and math.abs(value)<math.huge then math.clamp(math.round(value),low,high) else fallback
 end
 
-local function actionCells(actions, width, grid, touch)
+local function actionCells(actions, width, grid, touch, finish)
 	local pad = math.min(6,math.max(0,math.floor((width-1)/2)))
 	local gap = actionNumber(grid.Gap,4,0,24)
 	local available = math.max(1,width-2*pad)
@@ -389,6 +437,7 @@ local function actionCells(actions, width, grid, touch)
 	local cells = {}
 	for i, action in ipairs(actions) do
 		local span = if action.Span=="Full" or (#actions==1 and action.Span==nil) then columns
+			elseif action.Span=="Wide" then math.max(1, columns-1)
 			else actionNumber(action.Span,1,1,columns)
 		if nextCol>0 and (action.BreakBefore==true or nextCol+span>columns) then nextCol,line=0,line+1 end
 		if grid.FillLastRow == true and i == #actions and action.Span == nil then span=columns-nextCol end
@@ -397,7 +446,7 @@ local function actionCells(actions, width, grid, touch)
 		cells[i] = {x=pad+x,y=4+line*(height+gap),width=edge-x,height=height}
 		nextCol+=span
 	end
-	return cells, if #actions>0 then (line+1)*height+line*gap+8 else 0
+	return cells, if #actions>0 then (line+1)*height+line*gap+4+(if finish then gap else 4) else 0
 end
 
 local function actionAllowed(def, viewer, target, defaultAudience)
@@ -417,14 +466,14 @@ local function actionAllowed(def, viewer, target, defaultAudience)
 	return true
 end
 
-local function createRosterActionLayout(config, inner, builtins, activate, getTarget, viewer, guiService)
+local function createRosterActionLayout(config, inner, builtins, activate, getTarget, viewer, presentation)
 	local inspect = builtins.Avatar
 	local template = inspect:Clone()
 	local panel = Instance.new("Frame")
 	panel.Name,panel.LayoutOrder,panel.BackgroundTransparency,panel.Visible,panel.Parent = "CardActions",5,1,false,inner
 	local saved, custom, delegated, active = {},{},{},{}
 	local pressed, builtInConnections, captions = setmetatable({}, {__mode="k"}),{},{}
-	local feedback, services = {},nil
+	local feedback, services, finish = {},nil,false
 	local revision, destroyed = 0,false
 	local glyphs = {Trade="⇄",Friend="+",Block="⊘",Spectate="◉",ShowID="≡"}
 	local function remember(node, keys)
@@ -490,12 +539,11 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 	local function enableServices()
 		if services then return end
 		local input=game:GetService("UserInputService")
-		local gui=guiService or game:GetService("GuiService")
+		local gui=game:GetService("GuiService")
 		services={input=input,gui=gui,tweens=game:GetService("TweenService"),fade=TweenInfo.new(0.09,Enum.EasingStyle.Quad,Enum.EasingDirection.Out)}
 		local function on(signal,fn) table.insert(builtInConnections,signal:Connect(fn)) end
 		on(input.InputBegan,function(pointer)
-			-- A release from a cancelled drag may use a new InputObject. The next physical
-			-- press (including one on the card header) starts an independent interaction.
+			-- The next physical press clears cancelled drag state.
 			for _,state in pairs(feedback) do
 				if state.cancelledKind==pointer.UserInputType then state.cancelledKind=nil end
 			end
@@ -506,7 +554,6 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 			local record=pressed[pointer]
 			local state=record and feedback[record.node]
 			if state and state.pointer==pointer then state.pointer=nil;reflect(record.node,state,false);return end
-			-- Mouse and controller event objects may differ between the GUI and the global release.
 			if pointer.UserInputType==Enum.UserInputType.MouseButton1 or pointer.KeyCode==Enum.KeyCode.ButtonA then
 				for node,s in pairs(feedback) do
 					if s.pointer and s.pointer.UserInputType==pointer.UserInputType and s.pointer.KeyCode==pointer.KeyCode then
@@ -576,7 +623,6 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 		if start and (start.cancelled or start.node~=node or start.target~=current or start.key~=key) then return false end
 		if current~=binding.target or key~=binding.key then return false end
 		if binding.gated and not actionAllowed(binding.spec,viewer,current,if id=="Avatar" then "Both" else nil) then return false end
-		-- A game predicate may yield while the user selects another profile, leaves, or closes the list.
 		local latest,latestKey=getTarget()
 		return not destroyed and delegated[id]==binding and node.Visible and current==latest and key==latestKey
 	end
@@ -598,8 +644,11 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 		local id=def.Id
 		local image,emoji=def.Icon,def.Emoji
 		if image==nil and emoji==nil then
-			image=(config.ActionIcons or {})[id]
+			local icons=config.ActionIcons or {}
+			image=icons[id]
+			if image==nil and finish and id=="Avatar" then image=icons.Inspect end
 			if image==nil then image,emoji=grid.Icon,grid.Emoji end
+			if finish and image==nil and emoji==nil then image=actionArt[if id=="Avatar" then "Inspect" else id] end
 		end
 		if type(emoji)=="string" and emoji~="" then return nil,emoji end
 		if type(image)=="number" and image>0 and image<math.huge then image="rbxassetid://"..tostring(image) end
@@ -680,7 +729,6 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 		local slot=node:FindFirstChild("ActionWatermark") or decoration(node,"Frame","ActionWatermark")
 		slot.Visible,slot.ClipsDescendants=true,true
 		slot.ZIndex=math.max(1,node.HoverBackground.ZIndex-1)
-		-- A rectangular clip inset into the round corners needs no extra render texture.
 		local corner=node:FindFirstChildWhichIsA("UICorner")
 		local short=math.min(width,height)
 		local radius=if corner then math.clamp(corner.CornerRadius.Scale*short+corner.CornerRadius.Offset,0,short/2) else 4
@@ -695,7 +743,7 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 		local art=if image then pic else glyph
 		art.ZIndex,art.AnchorPoint,art.Position=slot.ZIndex,Vector2.new(x,0.5),UDim2.fromScale(x,0.5)
 	end
-	local function paint(node,def,grid,position,bg,width,height)
+	local function paint(node,def,grid,position,bg,width,height,large)
 		local content=node.HoverBackground
 		local pic,text,layout=content.Icon,content.Text,content.ListLayout
 		local behind=position=="Behind"
@@ -732,13 +780,18 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 		if behind or vertical then textWidth=math.max(1,width-8) end
 		text.Size=UDim2.fromOffset(textWidth,17)
 		node.ImageTransparency,node.ImageColor3=0,if typeof(def.Color)=="Color3" then def.Color else bg
+		if presentation then presentation.finishAction(node,def,finish,room,vertical,behind,large) end
 	end
 	local styled=false
 	local function update(spec, width, target, touch, large)
 		revision+=1
 		local generation=revision
 		local _,key=getTarget()
-		local definitions=(spec and spec.Actions) or config.Actions or presetActions[config.Preset] or baseActions
+		local grid=table.clone(config.ActionGrid or {})
+		for key,value in pairs((spec and spec.ActionGrid) or {}) do grid[key]=value end
+		local defaults
+		if presentation then finish,defaults=presentation.actionOptions(config,grid) end
+		local definitions=(spec and spec.Actions) or config.Actions or defaults or presetActions[config.Preset] or baseActions
 		local modern=spec~=nil or config.Actions~=nil or config.ActionGrid~=nil or presetActions[config.Preset]~=nil
 		table.clear(delegated)
 		if not modern then
@@ -748,6 +801,7 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 				for node,props in pairs(saved) do for key,value in pairs(props) do node[key]=value end end
 				for id,node in pairs(builtins) do
 					hideWatermark(node)
+					if presentation then presentation.finishAction(node,{},false) end
 					local glyph=node.HoverBackground:FindFirstChild("ActionGlyph")
 					if glyph then glyph.Visible=false end
 					if id~="Friend" and id~="Block" then node.HoverBackground.Text.Text=captions[id] end
@@ -764,8 +818,6 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 			return height
 		end
 		styled=true
-		local grid=table.clone(config.ActionGrid or {})
-		for key,value in pairs((spec and spec.ActionGrid) or {}) do grid[key]=value end
 		if large then grid.RowHeight=math.max(50,actionNumber(grid.RowHeight,44,28,96)) end
 		local allowed={}
 		for id,node in pairs(builtins) do allowed[id]=node.Visible end
@@ -797,20 +849,19 @@ local function createRosterActionLayout(config, inner, builtins, activate, getTa
 			table.insert(ordered,def)
 			table.insert(active,node)
 		end
-		local cells,height=actionCells(ordered,math.max(1,width+inner.Size.X.Offset),grid,touch)
+		local cells,height=actionCells(ordered,math.max(1,width+inner.Size.X.Offset),grid,touch,finish)
 		local base=if spec and typeof(spec.BackgroundColor)=="Color3" then spec.BackgroundColor else Color3.fromRGB(27,28,34)
 		for i,node in ipairs(active) do
 			local cell,def=cells[i],ordered[i]
 			node.Position,node.Size=UDim2.fromOffset(cell.x,cell.y),UDim2.fromOffset(cell.width,cell.height)
 			local position=def.IconPosition or grid.IconPosition or (if config.Preset=="Simulator" and #active>1 then "Top" else "Left")
-			paint(node,def,grid,position,base:Lerp(Color3.new(1,1,1),0.07),cell.width,cell.height)
+			paint(node,def,grid,position,base:Lerp(Color3.new(1,1,1),0.07),cell.width,cell.height,large)
 			skin(node,def,grid,target,key)
 		end
 		for id,node in pairs(builtins) do
 			if not delegated[id] then node.Visible=false;disableFeedback(node,false) end
 		end
 		panel.Size,panel.Visible=UDim2.new(1,0,0,height),height>0
-		-- Discard one-off definitions supplied by a previous player's style.
 		for id,node in pairs(custom) do
 			if not delegated[id] then
 				node.Visible=false
@@ -887,7 +938,20 @@ local function createRosterNameEffects(settings, guiService, runService)
 		end
 		return ColorSequence.new(stops)
 	end
-	local colorModes = {Cycle=true, Rainbow=true, Shimmer=true, Gradient=true}
+	local glacier = {Color3.fromRGB(83, 201, 234), Color3.fromRGB(221, 216, 255), Color3.fromRGB(171, 118, 238)}
+	local colorModes = {Cycle=true, Rainbow=true, Shimmer=true, Gradient=true, MovingGradient=true}
+	local mirroredTiles
+	local function supportsMirroredTiles()
+		if mirroredTiles == nil then
+			local probe = Instance.new("UIGradient")
+			mirroredTiles = pcall(function()
+				probe.TileMode = Enum.GradientTileMode.Mirror
+				probe.Scale = 1
+			end)
+			probe:Destroy()
+		end
+		return mirroredTiles
+	end
 	local function describe(spec, label)
 		local definition = if type(spec) == "table" then spec else {Preset = spec}
 		local preset = definition.Preset
@@ -899,15 +963,20 @@ local function createRosterNameEffects(settings, guiService, runService)
 		if not motion and not mode then return nil end
 		local color = label.TextColor3
 		local edge = color:Lerp(Color3.new(0, 0, 0), 0.22)
-		local defaults = if mode == "Rainbow" or mode == "Cycle" then rainbow
+		local defaults = if mode == "MovingGradient" then glacier elseif mode == "Rainbow" or mode == "Cycle" then rainbow
 			elseif mode == "Shimmer" then {edge, color:Lerp(white, 0.8), edge} else {color}
 		local colors = palette(definition.Colors, defaults)
+		if mode == "MovingGradient" and not supportsMirroredTiles() then mode = "Gradient" end
+		local direction = definition.Direction
 		return {
 			motion = motion, mode = mode, colors = colors, stops = colors.Keypoints,
 			dynamic = motion ~= nil or (mode ~= nil and mode ~= "Gradient"),
 			speed = number(definition.Speed, 1, 0, 4), amplitude = number(definition.Amplitude, 2, 0, 6),
 			frequency = number(definition.Frequency, 1, 0.2, 4), phase = number(definition.Phase, 0, -100, 100),
 			rotation = number(definition.Rotation, 0, -360, 360),
+			vertical = direction == "Up" or direction == "Down",
+			travel = if direction == "Left" or direction == "Up" then -1 else 1,
+			bandWidth = number(definition.BandWidth, 1, 0.25, 1),
 			shadowA = if typeof(definition.EchoColor) == "Color3" then definition.EchoColor else Color3.fromRGB(99, 227, 255),
 			shadowB = if typeof(definition.EchoColor2) == "Color3" then definition.EchoColor2 else Color3.fromRGB(255, 116, 183),
 		}
@@ -967,8 +1036,7 @@ local function createRosterNameEffects(settings, guiService, runService)
 		return if text == "" then "" else '<font transparency="1">' .. text .. '</font>'
 	end
 	local function fittedGradient(label, fx)
-		-- Fit horizontal colors to the word without using a possibly stale TextBounds
-		-- measurement as the width of another text layout.
+		-- Fit colors without resizing the native text rectangle.
 		local width, bounds = label.AbsoluteSize.X, label.TextBounds.X
 		if width <= 0 or bounds <= 0 or not label.TextFits or label.TextScaled or label.TextWrapped
 			or fx.rotation % 180 ~= 0 then return fx.colors, 1 end
@@ -987,6 +1055,30 @@ local function createRosterNameEffects(settings, guiService, runService)
 		if align < 1 then table.insert(stops, ColorSequenceKeypoint.new(1, fx.stops[#fx.stops].Value)) end
 		return ColorSequence.new(stops), span
 	end
+	-- Fit mirrored tiles to the ink once. Animation changes only Offset.
+	local function movingGradient(record, gradient)
+		local label, fx = record.label, record.fx
+		local size, bounds = label.AbsoluteSize, label.TextBounds
+		local extent = if fx.vertical then size.Y else size.X
+		local ink = if fx.vertical then bounds.Y else bounds.X
+		local span = if extent > 0 and ink > 0 and label.TextFits and not label.TextWrapped
+			then math.clamp(ink / extent, 0.01, 1) else 1
+		local align
+		if fx.vertical then
+			align = if label.TextYAlignment == Enum.TextYAlignment.Bottom then 1
+				elseif label.TextYAlignment == Enum.TextYAlignment.Center then 0.5 else 0
+		else
+			align = if label.TextXAlignment == Enum.TextXAlignment.Right then 1
+				elseif label.TextXAlignment == Enum.TextXAlignment.Center then 0.5 else 0
+		end
+		local scale = math.max(0.01, span * fx.bandWidth)
+		local axis = if fx.vertical then Vector2.new(0, 1) else Vector2.new(1, 0)
+		record.gradientOrigin = axis * ((align - 0.5) * (1 - span))
+		record.gradientStep = axis * (scale * fx.travel)
+		gradient.Color, gradient.TileMode = fx.colors, Enum.GradientTileMode.Mirror
+		gradient.Rotation, gradient.Scale = if fx.vertical then 90 else 0, scale
+		gradient.Offset = record.gradientOrigin + record.gradientStep * (fx.phase % 2)
+	end
 	local function mount(record, animated)
 		local label, fx = record.label, record.fx
 		record.alpha, record.strokeAlpha = label.TextTransparency, label.TextStrokeTransparency
@@ -995,10 +1087,10 @@ local function createRosterNameEffects(settings, guiService, runService)
 		local root = frame(label, "RosterNameEffect")
 		root.ClipsDescendants = true
 		record.root, record.animated = root, animated
-		local chars = if animated and fx.motion == "Wave" then markGlyphs(label) else nil
+		local split = animated and fx.motion == "Wave" and not (fx.mode == "MovingGradient" and fx.vertical)
+		local chars = if split then markGlyphs(label) else nil
 		if chars then
-			-- Each layer retains the entire line for native kerning and alignment.
-			-- Only the one visible grapheme receives an outline.
+			-- Keep the full line for native kerning.
 			record.glyphs = {}
 			for i, char in ipairs(chars) do
 				local t = copyText(record, root, "Glyph" .. i)
@@ -1024,10 +1116,15 @@ local function createRosterNameEffects(settings, guiService, runService)
 			end
 			record.main = copyText(record, root, "Lettering")
 			record.main.ZIndex += 1
-			if fx.mode == "Gradient" or fx.mode == "Shimmer" or fx.mode == "Rainbow" then
+			if fx.mode == "Gradient" or fx.mode == "MovingGradient" or fx.mode == "Shimmer" or fx.mode == "Rainbow" then
 				local gradient = Instance.new("UIGradient")
-				gradient.Color, record.gradientSpan = fittedGradient(label, fx)
-				gradient.Rotation, gradient.Parent = fx.rotation, record.main
+				if fx.mode == "MovingGradient" then
+					movingGradient(record, gradient)
+				else
+					gradient.Color, record.gradientSpan = fittedGradient(label, fx)
+					gradient.Rotation = fx.rotation
+				end
+				gradient.Parent = record.main
 				record.main.TextColor3, record.gradient = white, gradient
 			elseif fx.mode == "Cycle" then record.main.TextColor3 = fx.stops[1].Value end
 		end
@@ -1050,6 +1147,8 @@ local function createRosterNameEffects(settings, guiService, runService)
 				glyph.Position = UDim2.fromOffset(0, math.round(math.sin(angle - x * fx.frequency * tau) * amplitude))
 				if fx.mode then
 					local coordinate = if fx.mode == "Gradient" then x
+						elseif fx.mode == "MovingGradient" then
+							1 - math.abs((((x - 0.5) / fx.bandWidth + 0.5 - fx.travel * t) % 2) - 1)
 						elseif fx.mode == "Shimmer" then math.clamp(x + math.sin(angle * 0.28) * 0.7, 0, 1)
 						elseif fx.mode == "Rainbow" then (x * 0.68 + t * 0.18) % 1 else (1 - math.cos(angle * 0.35)) * 0.5
 					glyph.TextColor3 = sample(fx.stops, coordinate)
@@ -1071,6 +1170,8 @@ local function createRosterNameEffects(settings, guiService, runService)
 				end
 			end
 			if fx.mode == "Cycle" then record.main.TextColor3 = sample(fx.stops, (1 - math.cos(angle * 0.35)) * 0.5)
+			elseif fx.mode == "MovingGradient" then
+				record.gradient.Offset = record.gradientOrigin + record.gradientStep * (t % 2)
 			elseif record.gradient and fx.mode ~= "Gradient" then
 				record.gradient.Offset = Vector2.new(math.sin(angle * 0.28) * 0.65 * record.gradientSpan, 0)
 			end
@@ -1134,6 +1235,7 @@ local function createRosterNameEffects(settings, guiService, runService)
 		if not record then return end
 		record.sizeConnection:Disconnect()
 		record.textConnection:Disconnect()
+		if record.boundsConnection then record.boundsConnection:Disconnect() end
 		unmount(record)
 		records[label] = nil
 		-- The shared ticker may run before the deferred budget pass.
@@ -1155,6 +1257,9 @@ local function createRosterNameEffects(settings, guiService, runService)
 		local function changed() record.dirty = true; queue() end
 		record.sizeConnection = label:GetPropertyChangedSignal("AbsoluteSize"):Connect(changed)
 		record.textConnection = label:GetPropertyChangedSignal("ContentText"):Connect(changed)
+		if fx.mode == "MovingGradient" then
+			record.boundsConnection = label:GetPropertyChangedSignal("TextBounds"):Connect(changed)
+		end
 		records[label] = record
 		queue()
 	end
@@ -1316,17 +1421,19 @@ local function createRosterCardEmblem(banner, identity)
 				local reserve = UDim2.fromOffset(size + gap, 0)
 				identity.Size = originalSize - reserve
 				if not right then identity.Position = originalPosition + reserve end
-				rect = UDim2.new(0, size, 1, 0)
-				offset = UDim2.fromOffset(if right then identityX + available - size else identityX, 0)
-			else
-				-- Long names or tight cards get a shallow header extension. Existing
-				-- text, featured art, portrait and stat fields keep their normal space.
+				rect = UDim2.new(0, size, identity.Size.Y.Scale, identity.Size.Y.Offset)
+				offset = UDim2.new(0, if right then identityX + available - size else identityX,
+					identity.Position.Y.Scale, identity.Position.Y.Offset)
+			elseif spec.Overflow == "Below" then
 				size = math.min(size, math.max(1, headerWidth - 16), 30)
 				parent = header
 				originalHeader = header.Size
 				header.Size = originalHeader + UDim2.fromOffset(0, size + 5)
 				rect = UDim2.fromOffset(size, size)
 				offset = UDim2.new(align, if right then -size - 8 else 8, 0, originalHeader.Y.Offset - 1)
+			else
+				clear()
+				return
 			end
 		end
 		host.ZIndex = if behind then math.max(0, identity.ZIndex - 1) else identity.ZIndex
@@ -1339,7 +1446,7 @@ local function createRosterCardEmblem(banner, identity)
 end
 
 -- Inset-relative input positions, GUI hit tests and AbsolutePosition use the same origin.
-local function createRosterBadgeHints(screen, canShow, hitArea)
+local function createRosterBadgeHints(screen, canShow, hitArea, card)
 	local input = game:GetService("UserInputService")
 	local gui = game:GetService("GuiService")
 	local textService = game:GetService("TextService")
@@ -1356,17 +1463,17 @@ local function createRosterBadgeHints(screen, canShow, hitArea)
 	end
 	local function badgeAt(point)
 		if destroyed or not screen.Enabled or not screen.Parent or not next(bindings) then return nil end
-		if hitArea then
-			local p, size = hitArea.AbsolutePosition, hitArea.AbsoluteSize
-			if not hitArea.Visible or point.X < p.X or point.Y < p.Y
-				or point.X >= p.X + size.X or point.Y >= p.Y + size.Y then return nil end
+		local function inside(area)
+			if not area or not area.Visible then return false end
+			local p, size = area.AbsolutePosition, area.AbsoluteSize
+			return point.X >= p.X and point.Y >= p.Y and point.X < p.X+size.X and point.Y < p.Y+size.Y
 		end
+		if hitArea and not inside(hitArea) and not inside(card) then return nil end
 		local blocker
 		for _, object in screen.Parent:GetGuiObjectsAtPosition(point.X, point.Y) do
 			if bindings[object] and object.Visible and (not blocker or object:IsDescendantOf(blocker))
 				and (not canShow or canShow(object)) then return object end
-			-- Allow a row button above its own watermark. An unrelated button covering
-			-- the same pixels (such as the open profile) takes precedence.
+			-- A covering button blocks unrelated badges.
 			if not blocker and object.Active then blocker = object end
 		end
 		return nil
@@ -1990,7 +2097,6 @@ local function createMobileLayout(config, desktopTemplate)
 	close.Position = UDim2.new(1, -4, 0, 2)
 	close.Size = UDim2.fromOffset(40, 40)
 	close.ZIndex = 4
-	-- Retain the captured image at native size inside a larger touch target.
 	local closeIcon = Instance.new("ImageLabel")
 	closeIcon.Name, closeIcon.ImageContent = "Icon", close.ImageContent
 	closeIcon.ImageColor3, closeIcon.ImageTransparency = close.ImageColor3, close.ImageTransparency
@@ -2008,7 +2114,6 @@ local function createMobileLayout(config, desktopTemplate)
 	if pinDivider then
 		pinDivider.Parent, pinDivider.AnchorPoint, pinDivider.Position = pin, Vector2.new(0, 1), UDim2.fromScale(0, 1)
 	end
-	-- Each native row keeps its own image button, names, glyphs and stat cells.
 	templateRow.Parent = nil
 	for _, parent in ipairs({rowHost, scroll}) do
 		for _, child in ipairs(parent:GetChildren()) do
@@ -2043,7 +2148,6 @@ local function createMobileLayout(config, desktopTemplate)
 		pin = pin, back = back, sheet = sheet,
 	}
 	function mobile:newTabLabel(source)
-		-- The visible label itself owns the tap. It shares exact bounds with the text and underline.
 		local button = Instance.new("TextButton")
 		button.BackgroundTransparency, button.BorderSizePixel, button.AutoButtonColor = 1, 0, false
 		button.FontFace, button.TextSize, button.TextColor3 = source.FontFace, source.TextSize, source.TextColor3
@@ -2059,6 +2163,7 @@ local function createMobileLayout(config, desktopTemplate)
 		local major = math.clamp(434 + (long - 480) * 46 / 190, math.min(434, math.max(1, long - 12)), 600)
 		local width = if viewport.X > viewport.Y then major else minor
 		local height = if viewport.X > viewport.Y then minor else major
+		if sheet.Visible then height = math.max(height, card.Size.Y.Offset + 48) end
 		width, height = math.min(width, math.max(1, viewport.X - 12)), math.min(height, math.max(1, viewport.Y - 12))
 		panel.Size = UDim2.fromOffset(math.floor(width), math.floor(height))
 		return math.floor(width), math.floor(height)
@@ -2066,7 +2171,10 @@ local function createMobileLayout(config, desktopTemplate)
 	function mobile:showProfile(visible)
 		content.Visible, sheet.Visible, back.Visible = not visible, visible, visible
 		title.Visible = not visible and title.Text ~= ""
-		if not visible then sheet.CanvasPosition = Vector2.zero end
+		if not visible then
+			sheet.CanvasPosition = Vector2.zero
+			self:resize(screen.AbsoluteSize)
+		end
 	end
 	function mobile:listTopInset(nav)
 		-- Without a title the scope tabs and close button can share the top touch row.
@@ -2079,10 +2187,11 @@ local function createMobileLayout(config, desktopTemplate)
 	end
 	function mobile:positionProfile()
 		local height = card.Size.Y.Offset
-		local paneHeight = math.max(1, sheet.AbsoluteSize.Y)
+		local _, panelHeight = self:resize(screen.AbsoluteSize)
+		local paneHeight = math.max(1, panelHeight - 48)
 		card.AnchorPoint = Vector2.new(0.5, 0)
 		card.Position = UDim2.new(0.5, 0, 0, math.max(0, math.floor((paneHeight - height) / 2)))
-		sheet.CanvasSize = UDim2.fromOffset(0, height + 2)
+		sheet.CanvasSize = UDim2.fromOffset(0, height)
 	end
 	return mobile
 end
@@ -2156,7 +2265,7 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		return if stat then stat.Value else nil
 	end
 	local function formatCell(column, value, player)
-		if value == nil then return "â€”" end
+		if value == nil then return "—" end
 		local result = call(column.Format, value, player)
 		return tostring(if result ~= nil then result else value)
 	end
@@ -2423,6 +2532,14 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 			if badgeHints then badgeHints:Bind(badge,nil) end
 		end
 	end
+	local function bindHint(badge,tip)
+		if config.Tooltips~=false and type(tip)=="string" and tip~="" and not badgeHints then
+			badgeHints=createRosterBadgeHints(screen,function(node)
+				return opened and not destroyed and (not mobile or not selected or node:IsDescendantOf(card))
+			end,if mobile then mobile.panel else scroller,card)
+		end
+		if badgeHints then badgeHints:Bind(badge,tip) end
+	end
 	local function setBadge(row,slot,definition,maxWidth)
 		local badge=row.badges[slot]
 		local pic,emoji,caption,side=badgeContent(definition)
@@ -2471,14 +2588,12 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		badge.Visible,badge.Size=true,UDim2.fromOffset(width,height)
 		badge.Image.Image,badge.Image.Visible,badge.Image.ImageTransparency=pic,pic~="",opacity
 		badge.Image.ImageColor3=tint or Color3.new(1,1,1)
+		badge.Image.ImageRectSize=if typeof(style.ImageRectSize)=="Vector2" then style.ImageRectSize else Vector2.zero
+		badge.Image.ImageRectOffset=if typeof(style.ImageRectOffset)=="Vector2" then style.ImageRectOffset else Vector2.zero
 		badge.Text.Text,badge.Text.Visible,badge.Text.TextTransparency=if emoji~="" then emoji else caption,pic=="",opacity
 		badge.Text.TextColor3=tint or sourceCell.PlayerStatDisplay.TextColor3
 		badge.Text.TextSize=if emoji~="" then height else math.max(1,math.min(12,sourceCell.PlayerStatDisplay.TextSize,height))
-		if config.Tooltips~=false and type(style.Tooltip)=="string" and style.Tooltip~="" and not badgeHints then
-			badgeHints=createRosterBadgeHints(screen,function() return opened and not destroyed and (not mobile or not selected) end,
-				if mobile then mobile.panel else scroller)
-		end
-		if badgeHints then badgeHints:Bind(badge,style.Tooltip) end
+		bindHint(badge,style.Tooltip)
 		return if behind then 0 else width+row.nameFrame.Layout.Padding.Offset
 	end
 	local function alignRight(row)
@@ -2565,7 +2680,7 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		local size=if pic~="" then rosterIconSize(column.IconSize,config.IconSizes.Stat or 16,maxArt) else 0
 		if size==0 then pic="" end
 		cell.host.Visible,cell.host.Size=true,UDim2.new(0,width,sourceCell.Size.Y.Scale,sourceCell.Size.Y.Offset)
-		cell.text.Text=if column then formatCell(column,value,player) else tostring(call(tabs[activeTab].Format,value) or value or "â€”")
+		cell.text.Text=if column then formatCell(column,value,player) else tostring(call(tabs[activeTab].Format,value) or value or "—")
 		local color=if column then call(column.Color,value,player) else nil
 		cell.text.TextColor3=if typeof(color)=="Color3" then color else sourceCell.PlayerStatDisplay.TextColor3
 		if pic~="" and not cell.picture then
@@ -2798,7 +2913,7 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 			tile={cell=cell,caption=caption,value=val,pic=pic,radius=radius,outline=outline}
 			popupStats[i]=tile
 		end
-		tile.caption.Text,tile.value.Text=title,value
+		tile.caption.Text,tile.value.Text,tile.tint=title,value,tint
 		tile.pic.Image,tile.pic.Visible=art or "",art~=nil and art~=""
 		tile.pic.ImageColor3=pictureColor or Color3.new(1,1,1)
 		local gap=if spec then 4 else 0
@@ -3085,6 +3200,14 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		return {header=header}
 	end
 	local cardDesigner, genreLayout, cardEmblem
+	local presentation = script:FindFirstChild("CardPresentation")
+	if presentation then presentation = require(presentation) end
+	local decor = {}
+	decor.badges = presentation and config.Preset=="Competitive" and config.Features.Badges and
+		presentation.badges(cardName,bindHint,asset,badgeSetting(config.MaxBadges,3,3),config.IconSizes.Badge)
+	decor.frame = if presentation then presentation.new(card,cardInner) else nil
+	decor.presetEmblem = if presentation then presentation.emblem(config,templateIconAssets) else nil
+	decor.bio = if config.Preset == "Profile" then require(script.SocialProfile).section(cardInner) else nil
 	local function currentActionTarget()
 		if destroyed or not opened or not selected or not card.Visible then return nil end
 		if not selected.record and (not tabs[activeTab] or tabs[activeTab].ShowProfiles==false) then return nil end
@@ -3109,6 +3232,10 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		local spec=if type(style.Card)=="table" then style.Card else nil
 		local features=config.Features or {}
 		local images=features.ItemImages~=false
+		local frameStyle = config.ProfileFrame
+		if frameStyle == nil then frameStyle = config.Preset == "Profile" end
+		if spec and spec.Frame ~= nil then frameStyle = spec.Frame end
+		if decor.frame then decor.frame(if record and images and style.Card ~= false then frameStyle else false, asset) end
 		local width=math.min(originalCardWidth,math.max(1,(if mobile then mobile.panel.Size.X.Offset else screen.AbsoluteSize.X)-8))
 		local profiles=record~=nil or tabs[activeTab].ShowProfiles~=false
 		local target=if profiles then Players:GetPlayerByUserId(selected.userId) else nil
@@ -3118,6 +3245,7 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		avatar.Image=if hasAvatar and selected.userId>0 then ("rbxthumb://type=AvatarHeadShot&id=%d&w=150&h=150"):format(selected.userId) else ""
 		local displayName=if record then record.player.DisplayName else tostring(selected.name or (if profiles then "User "..selected.userId else "Rank #"..tostring(selected.rank or "")))
 		handle.Text=if target then "@"..target.Name elseif profiles then "User "..selected.userId else tostring(tabs[activeTab].Label or activeTab)
+		if spec and spec.Identity=="UserId" then handle.Text="Player ID:  "..tostring(selected.userId) end
 		role.Text,role.Visible=tostring(style.Title or ""),style.Title~=nil and style.Title~=""
 		if not spec then
 			cardText.Position=if hasAvatar then originalTextPos else UDim2.fromOffset(12,0)
@@ -3137,21 +3265,22 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 			statCount=math.min(#spec.Tiles,4)
 			for i=1,statCount do
 				local tile=spec.Tiles[i]
-				fillCardStat(i,statCount,tostring(tile.Label or ""),tostring(tile.Text or "â€”"),
+				fillCardStat(i,statCount,tostring(tile.Label or ""),tostring(tile.Text or "—"),
 					if images then asset(tile.Image) else "",tile.Color,spec,tile.ImageColor,tile.IconSize,width)
 			end
 		elseif features.CardStats~=false and config.ShowCardStats==true and record then
-			statCount=math.min(#columns,4)
+			local cardColumns = if config.Preset=="Competitive" and presentation then presentation.matchColumns(columns,record,getValue) else columns
+			statCount=math.min(#cardColumns,4)
 			for i=1,statCount do
-				local col=columns[i]
+				local col=cardColumns[i]
 				local value=getValue(record,col)
 				fillCardStat(i,statCount,tostring(col.Label or col.Id),formatCell(col,value,record.player),
 					if images then asset(call(col.Image,value,record.player)) else "",call(col.Color,value,record.player),spec,nil,nil,width)
 			end
 		elseif features.CardStats~=false and not record then
 			statCount=2
-			fillCardStat(1,2,"Rank","#"..tostring(selected.rank or "â€”"))
-			fillCardStat(2,2,tostring(tabs[activeTab].ColumnLabel or "Score"),tostring(call(tabs[activeTab].Format,selected.score) or selected.score or "â€”"))
+			fillCardStat(1,2,"Rank","#"..tostring(selected.rank or "—"))
+			fillCardStat(2,2,tostring(tabs[activeTab].ColumnLabel or "Score"),tostring(call(tabs[activeTab].Format,selected.score) or selected.score or "—"))
 		end
 		cardStats.Visible=statCount>0
 		for i=statCount+1,#popupStats do popupStats[i].cell.Visible=false end
@@ -3163,17 +3292,29 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		inspect.Visible=config.Features.AvatarAction and hasAvatar
 		block.Visible=other~=nil and config.ShowSocialActions~=false and blockedState~=nil
 		block.HoverBackground.Text.Text=if blockedState then "Unblock" else "Block"
-		if spec and (config.Preset=="Competitive" or config.Preset=="Roleplay") then
-			genreLayout=genreLayout or createGenreLayout(cardHeader,cardStats,role)
+		if spec and (config.Preset=="Competitive" or config.Preset=="Roleplay" or config.Preset=="Profile") then
+			genreLayout=genreLayout or createGenreLayout(cardHeader,cardStats,role,presentation)
 			genreLayout.apply(config.Preset,spec,width,popupStats,statCount,GuiService.PreferredTextSize~=Enum.PreferredTextSize.Medium)
 		end
-		if spec and type(spec.Emblem)=="table" then
+		local emblem = spec and spec.Emblem
+		local customBanner = spec and spec.BannerImage and spec.BannerImage ~= ""
+			and not (config.Preset == "Competitive" and spec.BannerImage == competitiveCover)
+		if emblem == nil and record and style.Card ~= false and not style.Banner
+			and not customBanner and not (spec and (spec.FeaturedImage or spec.FeaturedText)) then
+			emblem = decor.presetEmblem
+		end
+		if type(emblem)=="table" then
 			cardEmblem=cardEmblem or createRosterCardEmblem(banner,cardText)
-			cardEmblem.apply(spec.Emblem,width,images)
+			cardEmblem.apply(emblem,width,images)
 		elseif cardEmblem then cardEmblem.clear() end
+		if decor.badges then decor.badges(if spec and spec.HeaderLayout=="Match" and spec.ShowBadges~=false then style.Badges else nil) end
 		local h=cardHeader.Size.Y.Offset+(if cardStats.Visible then cardStats.Size.Y.Offset else 0)
+		if decor.bio then
+			h += decor.bio(if record and spec then record.player:GetAttribute("PennantFilteredBio") else nil, width,
+				GuiService.PreferredTextSize ~= Enum.PreferredTextSize.Medium)
+		end
 		actionLayout=actionLayout or createRosterActionLayout(config,cardInner,
-			{Avatar=inspect,Trade=trade,Friend=friend,Block=block},activate,currentActionTarget,Players.LocalPlayer)
+			{Avatar=inspect,Trade=trade,Friend=friend,Block=block},activate,currentActionTarget,Players.LocalPlayer,presentation)
 		actionSuspended=false
 		h+=actionLayout.update(spec,width,target,mobile~=nil or Input.PreferredInput==Enum.PreferredInput.Touch,
 			GuiService.PreferredTextSize~=Enum.PreferredTextSize.Medium)
@@ -3249,7 +3390,7 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		else
 			people.Text="People"
 		end
-		refresh.Text=if status=="Loadingâ€¦" then "Loadingâ€¦" else "Refresh"
+		refresh.Text=if status=="Loading…" then "Loading…" else "Refresh"
 		scroller.CanvasSize=UDim2.fromOffset(0,#entries*rowHeight)
 		local top=scroller.CanvasPosition.Y
 		local first=math.clamp(math.floor(top/rowHeight),1,math.max(1,#entries))
@@ -3303,7 +3444,7 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 		if retryTask then pcall(task.cancel,retryTask);retryTask=nil end
 		request+=1
 		local token,id,scope=request,activeTab,activeScope
-		status="Loadingâ€¦"
+		status="Loading…"
 		schedule()
 		pendingFetch=task.defer(function()
 			local ok,result=pcall(fetchGlobal,id,scope)
@@ -3313,7 +3454,7 @@ local function startClient(config, fetchGlobal, tabSource, attachVisibility)
 				globalRows=result.rows
 				if result.partial then
 					local checked,total=tonumber(result.checked) or 0,tonumber(result.total) or 0
-					status=if total>0 then string.format("Checking %d/%d",checked,total) else "Checking scoresâ€¦"
+					status=if total>0 then string.format("Checking %d/%d",checked,total) else "Checking scores…"
 					retryTask=task.delay(math.clamp(tonumber(result.retryAfter) or 8,1,300),function()
 						retryTask=nil
 						if not destroyed and opened and token==request then refreshGlobal() end
@@ -3999,9 +4140,10 @@ end
 
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
-local Roster = {}
+local Roster = {Icons = templateIconAssets, ActionIcons = actionArt, Badges = makeBadgeAtlas("rbxassetid://106291295332397"), MakeBadgeAtlas = makeBadgeAtlas}
 local clientSession = {}
 local serverSession = {}
+local profileSession = {}
 local catalogAttribute = "RosterBoards"
 
 local function runOnce(session, start)
@@ -4094,6 +4236,11 @@ function Roster.Start(config, fallback)
 end
 
 -- Server. Configured board definitions and backend callbacks stay in the server caller.
+function Roster.ServeProfiles(settings)
+	assert(RunService:IsServer(), "Start the bio service from a server Script")
+	return runOnce(profileSession, function() return require(script.SocialProfile).serve(settings) end)
+end
+
 function Roster.Serve(settings)
 	assert(RunService:IsServer(), "Call Roster.Serve from a server Script")
 	return runOnce(serverSession, function()

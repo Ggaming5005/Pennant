@@ -2,9 +2,19 @@
 -- Save your changes in Edit mode, then press Play. Roster.Start({...}) can override individual settings.
 -- To try a multi-line example, remove its opening and closing block-comment lines.
 return {
-	-- Choose "Classic", "Simulator", "Competitive", or "Roleplay".
+	-- Profile includes a jersey banner and a frame around the entire card.
+	-- Competitive shows the player's @handle, team and match stats from Columns.
+	-- Return Card = {Identity = "UserId"} from StylePlayer to show the player's numeric ID.
+	-- Card = {ShowBadges = false, Finish = false} hides the Competitive name pins and header finish.
+	-- ProfileFrame = false, -- Or true to use the same frame on any preset.
+	-- ProfileFrame = {Image = 75286429427852, SliceCenter = Rect.new(22,22,74,74), SliceScale = 0.7},
+	-- Choose "Classic", "Simulator", "Competitive", "Roleplay", or "Profile".
+	-- Profile is a social card with an optional filtered About section. See docs/profile.md for the server setup.
 	-- nil discovers existing leaderstats and any rankings served by your game.
 	Preset = nil,
+	-- Classic, Simulator and Roleplay can show a preset emblem on a live player's card.
+	-- TemplateIcons = false, -- Hide preset art. Your own badges and card images still work.
+	-- TemplateIcons = {Competitive = "rbxassetid://YOUR_IMAGE_ID"}, -- Or replace one icon.
 	Tooltips = true, -- Set to false to turn off badge hints everywhere.
 	-- NameBadgeGap = 3, -- Pixels between the end of the name and a right-side badge.
 	-- MaxBadges = 4,    -- Per player. Increase up to 8 if the list has room.
@@ -49,23 +59,28 @@ return {
 	]]
 
 	-- Give each player a name, badge and card treatment. The accent follows their team.
-	-- Name effects include Wave, Glitch, Rainbow, Cycle, Shimmer, and static Gradient.
+	-- Name effects include Wave, Glitch, Rainbow, Cycle, Shimmer, Gradient and MovingGradient.
+	-- MovingGradient travels Right by default. Try Left, Up or Down, or Speed = 0 to freeze it.
+	-- BandWidth is one palette's width or height relative to the name (0.25 to 1).
 	-- Image asset IDs can replace Emoji on a badge or emblem via the Image field.
 	--[[
+	StyleAttributes = {"IsMVP", "IsVIP"}, -- Public flags supplied by your game.
 	StylePlayer = function(player)
 		local accent = if player.Team then player.Team.TeamColor.Color else Color3.fromRGB(255, 205, 110)
+		local art = require(script.Parent).Badges
+		local badges = {}
+		if player:GetAttribute("IsMVP") == true then table.insert(badges, art.MVP) end
+		if player:GetAttribute("IsVIP") == true then table.insert(badges, art.VIP) end
 		return {
 			NameTag = {
 				Font = Enum.Font.BuilderSansBold, Color = accent,
-				Effect = {Motion = "Wave", ColorMode = "Cycle", Colors = {accent, Color3.fromRGB(255, 246, 219)}, Amplitude = 2},
+				Effect = {Preset = "MovingGradient", Direction = "Right", Speed = 0.65, BandWidth = 0.85,
+					Colors = {accent, Color3.fromRGB(255, 246, 219), Color3.fromRGB(245, 146, 111)}},
 			},
-			Badges = {
-				{Emoji = "✦", Position = "Right", Size = 16, Color = accent, Tooltip = "Team member"},
-				{Text = "VIP", Position = "Right", Tooltip = "VIP badge"},
-			},
+			Badges = badges,
 			Card = {
 				BannerColor = Color3.fromRGB(69, 33, 45), AvatarRingColor = accent,
-				Emblem = {Emoji = "✦", Position = "Behind", Align = "Right", Size = 64, Transparency = 0.82},
+				Emblem = {Image = require(script.Parent).Icons.Competitive, Position = "Behind", Align = "Right", Size = 64, Transparency = 0.82},
 			},
 		}
 	end,
@@ -80,7 +95,7 @@ return {
 		{Id = "Avatar", Span = "Full"},
 		{
 			Id = "Team", Label = "Show team", Audience = "Both", BreakBefore = true,
-			Emoji = "🏳️", IconPosition = "Right", IconSize = 20,
+			Icon = require(script.Parent).Icons.Classic, IconPosition = "Right", IconSize = 20,
 			OnActivated = function(target)
 				local team = target.Team
 				local gui = game:GetService("StarterGui")

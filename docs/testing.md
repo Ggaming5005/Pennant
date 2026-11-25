@@ -2,6 +2,8 @@
 
 ## Recorded Studio result
 
+The Competitive card was opened on desktop and on a landscape iPhone 17 Pro emulator. The label and value shared each stat column's center on both. Both button gaps measured 6 pixels, including the space under Highlights. Studio loaded the custom backpack, magnifier and replay artwork. The phone sheet grew to show the complete card and restored the list height on Back. A separate short-viewport check kept the card scrollable. On desktop, closing and reopening with Tab allowed the same player to be selected again. [Phone interaction](../media/mobile-profile.gif) · [Earned badge hovers](../media/earned-badges.gif)
+
 The Studio test passed on a desktop viewport and on an emulated iPhone 17 Pro in landscape. It called the example board through the real client/server RemoteFunction, selected each tab, and checked the visible names, scores, rank order and active tab underline.
 
 | Rank | Global | Friends |
@@ -31,14 +33,15 @@ From the repository root, use [Lune 0.11.1](https://github.com/lune-org/lune/rel
 ```sh
 lune run tests/package.luau
 lune run tests/rankings.luau
+lune run tests/social-profile.luau
 ```
 
-Both suites passed locally. The package suite compares the two scripts inside the model against the source files, checks the editable UI templates, compiles the examples and verifies the sample server stays inactive outside Studio.
+The package suite compares all four scripts in the model with their source and checks the desktop and mobile templates. It exercises the moving gradient, reduced motion, animation budget, badge crops and spacing after long or scaled names. The action tests cover button spans, touch targets, custom icon overrides and the bottom inset at several gap settings.
 
 The rankings suite loads the shipped Luau module and exercises its server request handler with in-memory substitutes for Roblox services. It covers Global ordering, shared cached reads, Friends isolation between viewers, missing scores, ties among returned rows, partial scans with a limited read budget, and recovery after a source outage. Neither command requires a Roblox account or a live data store.
 
-GitHub Actions runs both commands on pushes and pull requests. [View test runs](https://github.com/Ggaming5005/Pennant/actions/workflows/checks.yml).
+The biography suite uses controlled HTTP and filtering responses to test account IDs, absent bios, refresh limits, consent changes and cleanup. GitHub Actions is configured to run all three commands on pushes and pull requests. [View hosted test runs](https://github.com/Ggaming5005/Pennant/actions/workflows/checks.yml).
 
 ## Rebuild the Studio model
 
-After editing the scripts in `src/`, run `lune run tools/build.luau` and repeat the package test. The build keeps the editable GUI templates from the checked-in model and updates its two scripts.
+After editing the scripts in `src/`, run `lune run tools/build.luau` and repeat the package test. The build preserves both editable GUI templates and updates the module, the single editable Settings script, and the two internal presentation and bio modules.

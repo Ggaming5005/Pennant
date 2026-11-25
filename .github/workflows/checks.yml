@@ -31,3 +31,6 @@ jobs:
 
       - name: Verify rankings
         run: '"$RUNNER_TEMP/lune" run tests/rankings.luau'
+
+      - name: Verify profile biographies
+        run: '"$RUNNER_TEMP/lune" run tests/social-profile.luau'

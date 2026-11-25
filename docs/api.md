@@ -18,6 +18,10 @@ Require `game:GetService("ReplicatedStorage"):WaitForChild("Roster")`. Start the
 
 ## Live data and styling
 
+**Competitive match cards.** `Columns` supplies the ordered match stats. The preset starts with Kills, Deaths and Assists. The header shows the player's display name, @handle and team. Return `Title` from `StylePlayer` to supply a custom title, or set `Card.Identity = "UserId"` to show the numeric player ID. [Settings example](settings.md#competitive-match-stats)
+
+**Bundled art.** `Roster.Icons` exposes the four preset card image URIs by preset name. `Roster.Badges` exposes immutable sprite specs for `MVP`, `VIP`, `Creator`, `Moderator`, `Champion` and `Founder`. Pass them in the player's ordered `Badges` array. To point all six at your own upload of the same atlas, call `Roster.MakeBadgeAtlas(imageId)` once. It accepts a numeric image ID or an image URI. Each entry includes its image, cell offset, pixel size, position and tooltip. `TemplateIcons` controls preset card art separately. [Settings and source art](settings.md#template-icons)
+
 **Here** reads the current server’s players. Without `Columns`, the roster discovers public `IntValue`, `NumberValue`, `StringValue` and `BoolValue` children of `leaderstats`. It follows their values and handles players or stats added after startup. `StatsFolder` selects another folder name.
 
 | Setting | Contract |
@@ -31,13 +35,32 @@ Require `game:GetService("ReplicatedStorage"):WaitForChild("Roster")`. Start the
 
 `Classic`, `Simulator`, `Competitive` and `Roleplay` presets start with **Here**. To show both ranked scopes for an explicit preset, set `Features = {Rankings = true}` and serve compatible boards. With no preset, available server boards are discovered by default. The hatch example includes a rare-item column and enables both ranking scopes. [Hatch settings example](../examples/hatch-settings.luau)
 
+### Moving gradient options
+
+Return `NameTag = {Effect = "MovingGradient"}` from `StylePlayer` for the default palette. Use an effect table with `Preset = "MovingGradient"` to customize it. A card inherits the effect or can override it through `Card.NameTag.Effect`. [Complete Settings example](settings.md#move-a-palette-across-a-name)
+
+| Effect field | Behavior |
+| --- | --- |
+| `Colors` | Up to six ordered `Color3` values or a `ColorSequence`. The default palette runs from ice blue through lilac to violet. Longer sequences are sampled at six stops. |
+| `Direction` | `"Right"` (default), `"Left"`, `"Up"` or `"Down"`. The direction selects the gradient axis. |
+| `BandWidth` | Fraction of the displayed name width for horizontal travel or its height for vertical travel, from 0.25 to 1. Default 1. |
+| `Speed` | Palette lengths traveled per second, from 0 to 4. Default 1. At speed 1 a complete mirrored loop takes two seconds. |
+| `Phase` | Initial travel in palette lengths, from −100 to 100. At 1 the colors start one band ahead. At 2 they repeat. |
+| `Motion` | Combine `"Wave"` or `"Glitch"` with `ColorMode = "MovingGradient"`. Horizontal waves can color individual letters. Vertical waves move the whole line together. |
+
+On current clients the whole-name renderer uses a single native mirrored `UIGradient` for its lettering. Animation ticks change the offset and reuse its palette. Roblox Reduce Motion, `Speed = 0` and the animation cap preserve the static colors. Clients without mirrored tile support use an ordinary gradient. [Roblox gradient options](https://create.roblox.com/docs/ui/appearance-modifiers#tile-mode)
+
 ## Card actions
+
+For the Competitive preset, `OnLoadout(targetPlayer, viewer)` and `OnHighlights(targetPlayer, viewer)` connect the two game-specific actions. Both apply to self and other live players. **Inspect** uses the built-in avatar inspector. `Roster.ActionIcons` contains the original Loadout backpack, Inspect magnifier and Highlights replay clapper asset URIs. Set an action's `Icon` to replace its default or `Icon = false` to show only the caption. [Appearance, grouping and spans](settings.md#arrange-the-profile-buttons)
 
 Put ordered action IDs or definitions in `Actions`. A player’s `Card.Actions` can provide a different list. **Avatar** opens Roblox’s avatar inspector. **Friend** and **Block** invoke the appropriate native prompts for an eligible other player in the server. **Trade** requires the game’s `OnTrade(targetPlayer)`. **Spectate** and **ShowID** take `OnSpectate(targetPlayer, viewer)` and `OnShowID(targetPlayer, viewer)`.
 
 A custom definition takes `Id`, optional `Label`, and `OnActivated(targetPlayer, viewer)`. `Audience` accepts `"Self"`, `"Other"` or `"Both"`. Custom actions default to other players. `When(viewer, targetPlayer)` must return `true` for the action to appear. The predicate receives the **viewer first** and the action callback receives the **target first**. Use `Span = "Full"`, a numeric `Span`, or `BreakBefore = true` to arrange the buttons. Keep trades, purchases and other state changes in the game’s server-side validation flow.
 
 ## Server rankings
+
+For the independent biography service, see [ServeProfiles, consent and refresh](profile.md). Profile cards work with the ranking service turned off.
 
 | Call | Result |
 | --- | --- |

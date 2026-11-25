@@ -103,7 +103,8 @@ local services = {
 local environment = {
 	game = {GetService = function(_, id) return assert(services[id], "Unexpected service " .. id) end},
 	script = module, Instance = {new = newInstance}, task = {defer = defer},
-	Color3 = roblox.Color3, Enum = {DataStoreRequestType = {OrderedRead = "OrderedRead", OrderedList = "OrderedList"}},
+	Color3 = roblox.Color3, Vector2 = roblox.Vector2,
+	Enum = {DataStoreRequestType = {OrderedRead = "OrderedRead", OrderedList = "OrderedList"}},
 	os = {clock = function() return now end}, warn = function() end,
 }
 local Roster = luau.load(fs.readFile("src/Roster.luau"), {environment=environment, injectGlobals=true})()

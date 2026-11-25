@@ -5,6 +5,7 @@ local roblox = require("@lune/roblox")
 
 local path = "Roster.rbxm"
 local templateNames = {"StockPlayerList", "StockMobilePlayerList"}
+local moduleNames = {"Settings", "CardPresentation", "SocialProfile"}
 
 local function readSource(file)
 	-- Keep the installed source identical across LF and CRLF checkouts.
@@ -15,31 +16,50 @@ local function readSource(file)
 	return source
 end
 
-local function readPackage(bytes)
+local function readPackage(bytes, allowPreviousRelease)
 	local roots = roblox.deserializeModel(bytes)
 	local root = roots[1]
 	assert(#roots == 1 and root.Name == "Roster" and root:IsA("ModuleScript"), "Expected a single Roster ModuleScript")
-	assert(#root:GetChildren() == 3, "Expected Settings and two GUI templates under Roster")
-	local settings = root:FindFirstChild("Settings")
-	assert(settings and settings:IsA("ModuleScript"), "Missing Roster.Settings ModuleScript")
-	for _, name in ipairs(templateNames) do
-		local template = root:FindFirstChild(name)
-		assert(template and template:IsA("ScreenGui"), "Missing ScreenGui template: " .. name)
+	local children = root:GetChildren()
+	local expected = {Settings = "ModuleScript", StockPlayerList = "ScreenGui", StockMobilePlayerList = "ScreenGui"}
+	if not allowPreviousRelease or #children ~= 3 then
+		expected.CardPresentation, expected.SocialProfile = "ModuleScript", "ModuleScript"
 	end
-	return root, settings
+	for _, child in children do
+		assert(expected[child.Name] == child.ClassName, "Unexpected, duplicate or misnamed package child: " .. child.Name)
+		expected[child.Name] = nil
+	end
+	assert(next(expected) == nil, "Incomplete Roster package")
+	return root
 end
 
 local source = readSource("src/Roster.luau")
-local settingsSource = readSource("src/Settings.luau")
 local previous = fs.readFile(path)
-local root, settings = readPackage(previous)
-root.Source, settings.Source = source, settingsSource
+local root = readPackage(previous, true)
+local templateBytes = {}
+for _, name in templateNames do
+	templateBytes[name] = roblox.serializeModel({root[name]})
+end
+root.Source = source
+local sources = {}
+for _, name in moduleNames do
+	local text = readSource("src/" .. name .. ".luau")
+	local child = root:FindFirstChild(name)
+	if not child then
+		child = roblox.Instance.new("ModuleScript")
+		child.Name, child.Parent = name, root
+	end
+	child.Source, sources[name] = text, text
+end
 
 local bytes = roblox.serializeModel({root})
-local verified, verifiedSettings = readPackage(bytes)
-assert(verified.Source == source and verifiedSettings.Source == settingsSource, "Source changed during serialization")
+local verified = readPackage(bytes, false)
+assert(verified.Source == source, "Roster source changed during serialization")
+for _, name in moduleNames do
+	assert(verified[name].Source == sources[name], name .. " source changed during serialization")
+end
 for _, name in ipairs(templateNames) do
-	assert(roblox.serializeModel({verified[name]}) == roblox.serializeModel({root[name]}), name .. " changed during serialization")
+	assert(roblox.serializeModel({verified[name]}) == templateBytes[name], name .. " changed during serialization")
 end
 if bytes ~= previous then fs.writeFile(path, bytes) end
-print(("Verified %s (%d bytes), both sources, and both GUI templates."):format(path, #bytes))
+print(("Verified %s (%d bytes), four sources, and both stock GUI templates."):format(path, #bytes))
